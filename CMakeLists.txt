@@ -45,11 +45,19 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    Drivers/WS2812B/ws2812b.c
+        Drivers/SEGGER-RTT/SEGGER_RTT.c
+        Drivers/SEGGER-RTT/SEGGER_RTT_printf.c
+        Drivers/AS5047P/as5047p.c
+        Drivers/AS5047P/as5047p_port.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    Drivers/WS2812B
+        Drivers/SEGGER-RTT
+        Drivers/AS5047P
 )
 
 # Add project symbols (macros)

@@ -20,6 +20,7 @@
 #include "main.h"
 #include "adc.h"
 #include "fdcan.h"
+#include "gpdma.h"
 #include "icache.h"
 #include "spi.h"
 #include "tim.h"
@@ -28,7 +29,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ws2812b.h"
+#include "SEGGER_RTT.h"
+#include "as5047p.h"
+#include "as5047p_port.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,7 +53,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+as5047p_handle_t as5047p;
+uint16_t current_angle = 0;
+volatile uint16_t current_angle_deg = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -96,22 +102,49 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_GPDMA1_Init();
   MX_ICACHE_Init();
   MX_FDCAN1_Init();
   MX_TIM1_Init();
   MX_SPI1_Init();
   MX_USART3_UART_Init();
   MX_ADC1_Init();
-  MX_SPI3_Init();
   MX_TIM3_Init();
+  MX_SPI3_Init();
   /* USER CODE BEGIN 2 */
-
+  SEGGER_RTT_Init();
+  WS2812B_Init(&htim3, TIM_CHANNEL_2);
+  int8_t step = 1;
+  uint8_t brightness = 0;
+  
+  //as5047p_port_init(&as5047p);
+  
+  RTT_Log("[SYSTEM]Init done!\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    if (WS2812B_IsReady()) {
+      WS2812B_SetColor(0, brightness, 0, 0); // Red color
+      WS2812B_Update();
+
+      brightness += step;
+      if (brightness >= 50) {
+        step = -1;
+      } else if (brightness == 0) {
+        step = 1;
+      }
+    }
+
+    // int8_t status = as5047p_get_position(&as5047p, without_daec, &current_angle);
+    // if (status == 0) {
+    //   current_angle_deg = (uint16_t)(((uint32_t)current_angle * 360U) / 16384U);
+    // }
+
+    HAL_Delay(20);
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -176,7 +209,9 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim) {
+  WS2812B_TransferCompleteCallback(htim);
+}
 /* USER CODE END 4 */
 
  /* MPU Configuration */
