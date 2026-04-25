@@ -18,6 +18,18 @@ static TIM_HandleTypeDef *ws2812b_htim;
 static uint32_t ws2812b_channel;
 static volatile uint8_t ws2812b_transfer_complete = 1;
 
+static void WS2812B_WaitReady(void) {
+    while (!WS2812B_IsReady()) {}
+}
+
+static void WS2812B_ShowAndWait(uint8_t r, uint8_t g, uint8_t b, uint32_t hold_time_ms) {
+    WS2812B_WaitReady();
+    WS2812B_SetColor(0, r, g, b);
+    WS2812B_Update();
+    WS2812B_WaitReady();
+    HAL_Delay(hold_time_ms);
+}
+
 void WS2812B_Init(TIM_HandleTypeDef *htim, uint32_t channel) {
     ws2812b_htim = htim;
     ws2812b_channel = channel;
@@ -51,6 +63,15 @@ void WS2812B_Update(void) {
 
 uint8_t WS2812B_IsReady(void) {
     return ws2812b_transfer_complete;
+}
+
+void WS2812B_PowerOnSelfTest(uint8_t brightness, uint32_t on_time_ms) {
+    WS2812B_ShowAndWait(brightness, 0, 0, on_time_ms);
+    WS2812B_ShowAndWait(0, 0, 0, 80);
+    WS2812B_ShowAndWait(0, brightness, 0, on_time_ms);
+    WS2812B_ShowAndWait(0, 0, 0, 80);
+    WS2812B_ShowAndWait(0, 0, brightness, on_time_ms);
+    WS2812B_ShowAndWait(0, 0, 0, 0);
 }
 
 void WS2812B_TransferCompleteCallback(TIM_HandleTypeDef *htim) {

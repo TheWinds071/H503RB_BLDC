@@ -114,10 +114,9 @@ int main(void)
   /* USER CODE BEGIN 2 */
   SEGGER_RTT_Init();
   WS2812B_Init(&htim3, TIM_CHANNEL_2);
-  int8_t step = 1;
-  uint8_t brightness = 0;
-  
-  //as5047p_port_init(&as5047p);
+  WS2812B_PowerOnSelfTest(50, 500);
+
+  as5047p_port_init(&as5047p);
   
   RTT_Log("[SYSTEM]Init done!\n");
   /* USER CODE END 2 */
@@ -126,22 +125,17 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    if (WS2812B_IsReady()) {
-      WS2812B_SetColor(0, brightness, 0, 0); // Red color
-      WS2812B_Update();
-
-      brightness += step;
-      if (brightness >= 50) {
-        step = -1;
-      } else if (brightness == 0) {
-        step = 1;
-      }
+    static uint16_t rtt_print_div = 0;
+    int8_t status = as5047p_get_position(&as5047p, without_daec, &current_angle);
+    if (status == 0) {
+      current_angle_deg = (uint16_t)(((uint32_t)current_angle * 360U) / 16384U);
+        uint32_t angle_deci_deg = ((uint32_t)current_angle * 3600U) / 16384U;
+        RTT_Log("Angle: %u.%u deg (raw=%u)\n",
+                (unsigned int)(angle_deci_deg / 10U),
+                (unsigned int)(angle_deci_deg % 10U),
+                (unsigned int)current_angle);
+        rtt_print_div = 0;
     }
-
-    // int8_t status = as5047p_get_position(&as5047p, without_daec, &current_angle);
-    // if (status == 0) {
-    //   current_angle_deg = (uint16_t)(((uint32_t)current_angle * 360U) / 16384U);
-    // }
 
     HAL_Delay(20);
 
