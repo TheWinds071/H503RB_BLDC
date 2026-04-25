@@ -33,6 +33,8 @@
 #include "SEGGER_RTT.h"
 #include "as5047p.h"
 #include "as5047p_port.h"
+#include "drv8323rs.h"
+#include "motor_open_loop.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,6 +58,9 @@
 as5047p_handle_t as5047p;
 uint16_t current_angle = 0;
 volatile uint16_t current_angle_deg = 0;
+drv8323rs_t drv8323rs;
+motor_pwm_t motor_pwm;
+motor_open_loop_t motor_open_loop;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -114,36 +119,103 @@ int main(void)
   /* USER CODE BEGIN 2 */
   SEGGER_RTT_Init();
   WS2812B_Init(&htim3, TIM_CHANNEL_2);
-  int8_t step = 1;
-  uint8_t brightness = 0;
-  
-  //as5047p_port_init(&as5047p);
-  
-  RTT_Log("[SYSTEM]Init done!\n");
+  as5047p_port_init(&as5047p);
+
+  if (drv8323rs_init(&drv8323rs,
+                     &(drv8323rs_config_t){
+                         .hspi = &hspi3,
+                         .cs_port = SPI3_CS_GPIO_Port,
+                         .cs_pin = SPI3_CS_Pin,
+                         .enable_port = ENABLE_GPIO_Port,
+                         .enable_pin = ENABLE_Pin,
+                     }) != HAL_OK) {
+    uint16_t drv_regs[7] = {0};
+    RTT_Log("[DRV8323RS] pins: CS=%u MISO=%u ENABLE=%u CAL=%u\n",
+            (unsigned int)HAL_GPIO_ReadPin(SPI3_CS_GPIO_Port, SPI3_CS_Pin),
+            (unsigned int)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_2),
+            (unsigned int)HAL_GPIO_ReadPin(ENABLE_GPIO_Port, ENABLE_Pin),
+            (unsigned int)HAL_GPIO_ReadPin(CAL_GPIO_Port, CAL_Pin));
+    if (drv8323rs_dump_registers(&drv8323rs, drv_regs, 7U) == HAL_OK) {
+      RTT_Log("[DRV8323RS] init failed step=%u hal=%d readback=0x%03X regs:"
+              " 0=0x%03X 1=0x%03X 2=0x%03X 3=0x%03X 4=0x%03X 5=0x%03X 6=0x%03X\n",
+              (unsigned int)drv8323rs.last_error_step,
+              (int)drv8323rs.last_hal_status,
+              (unsigned int)drv8323rs.last_readback,
+              (unsigned int)drv_regs[0],
+              (unsigned int)drv_regs[1],
+              (unsigned int)drv_regs[2],
+              (unsigned int)drv_regs[3],
+              (unsigned int)drv_regs[4],
+              (unsigned int)drv_regs[5],
+              (unsigned int)drv_regs[6]);
+    } else {
+      RTT_Log("[DRV8323RS] init failed step=%u hal=%d readback=0x%03X dump failed\n",
+              (unsigned int)drv8323rs.last_error_step,
+              (int)drv8323rs.last_hal_status,
+              (unsigned int)drv8323rs.last_readback);
+    }
+    while (1) {
+      HAL_Delay(1000);
+    }
+  }
+
+  WS2812B_PowerOnSelfTest(50, 120);
+
+  if (motor_pwm_init(&motor_pwm,
+                     &(motor_pwm_config_t){
+                         .htim = &htim1,
+                         .enable_port = ENABLE_GPIO_Port,
+                         .enable_pin = ENABLE_Pin,
+                         .bus_voltage = 12.0f,
+                     }) != HAL_OK) {
+    Error_Handler();
+  }
+
+  if (motor_open_loop_init(&motor_open_loop,
+                           &(motor_open_loop_config_t){
+                               .motor_pwm = &motor_pwm,
+                               .bus_voltage = 12.0f,
+                               .align_voltage = 3.0f,
+                               .align_time_ms = 800U,
+                               .voltage_q = 4.0f,
+                               .startup_speed_hz = 0.3f,
+                               .ramp_time_ms = 1500U,
+                               .electrical_speed_hz = 1.0f,
+                               .modulation_limit = 0.80f,
+                           }) != HAL_OK) {
+    Error_Handler();
+  }
+
+  if (motor_open_loop_start(&motor_open_loop) != HAL_OK) {
+    Error_Handler();
+  }
+
+  RTT_Log("[SYSTEM] DRV8323RS ready, open-loop SVPWM started.\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    if (WS2812B_IsReady()) {
-      WS2812B_SetColor(0, brightness, 0, 0); // Red color
-      WS2812B_Update();
+    static uint32_t last_log_ms = 0;
+    int8_t status;
 
-      brightness += step;
-      if (brightness >= 50) {
-        step = -1;
-      } else if (brightness == 0) {
-        step = 1;
-      }
+    motor_open_loop_update(&motor_open_loop);
+
+    status = as5047p_get_position(&as5047p, without_daec, &current_angle);
+    if (status == 0) {
+      current_angle_deg = (uint16_t)(((uint32_t)current_angle * 360U) / 16384U);
     }
 
-    // int8_t status = as5047p_get_position(&as5047p, without_daec, &current_angle);
-    // if (status == 0) {
-    //   current_angle_deg = (uint16_t)(((uint32_t)current_angle * 360U) / 16384U);
-    // }
+    if ((HAL_GetTick() - last_log_ms) >= 100U) {
+      last_log_ms = HAL_GetTick();
+      RTT_Log("cmd_ele=%.1f deg, enc_mech=%u deg, raw=%u\n",
+              motor_open_loop_get_electrical_angle_deg(&motor_open_loop),
+              (unsigned int)current_angle_deg,
+              (unsigned int)current_angle);
+    }
 
-    HAL_Delay(20);
+    HAL_Delay(1);
 
     /* USER CODE END WHILE */
 

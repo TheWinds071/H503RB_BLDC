@@ -83,16 +83,16 @@ void MX_SPI3_Init(void)
   hspi3.Instance = SPI3;
   hspi3.Init.Mode = SPI_MODE_MASTER;
   hspi3.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi3.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi3.Init.DataSize = SPI_DATASIZE_16BIT;
   hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi3.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi3.Init.NSS = SPI_NSS_SOFT;
-  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
   hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi3.Init.CRCPolynomial = 0x7;
-  hspi3.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  hspi3.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
   hspi3.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
   hspi3.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
   hspi3.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
@@ -162,7 +162,7 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
   else if(spiHandle->Instance==SPI3)
   {
   /* USER CODE BEGIN SPI3_MspInit 0 */
-
+    GPIO_InitTypeDef gpio_pullup_fix = {0};
   /* USER CODE END SPI3_MspInit 0 */
 
   /** Initializes the peripherals clock
@@ -183,14 +183,27 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     PA2     ------> SPI3_MISO
     PA3     ------> SPI3_MOSI
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3;
+    GPIO_InitStruct.Pin = GPIO_PIN_1;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF6_SPI3;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+    GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF6_SPI3;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
   /* USER CODE BEGIN SPI3_MspInit 1 */
+    gpio_pullup_fix.Pin = GPIO_PIN_2;
+    gpio_pullup_fix.Mode = GPIO_MODE_AF_PP;
+    gpio_pullup_fix.Pull = GPIO_PULLUP;
+    gpio_pullup_fix.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio_pullup_fix.Alternate = GPIO_AF6_SPI3;
+    HAL_GPIO_Init(GPIOA, &gpio_pullup_fix);
 
   /* USER CODE END SPI3_MspInit 1 */
   }

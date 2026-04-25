@@ -18,6 +18,35 @@ static TIM_HandleTypeDef *ws2812b_htim;
 static uint32_t ws2812b_channel;
 static volatile uint8_t ws2812b_transfer_complete = 1;
 
+static uint8_t WS2812B_WaitReady(uint32_t timeout_ms) {
+    const uint32_t start_tick = HAL_GetTick();
+
+    while (!WS2812B_IsReady()) {
+        if ((HAL_GetTick() - start_tick) >= timeout_ms) {
+            return 0U;
+        }
+    }
+
+    return 1U;
+}
+
+static uint8_t WS2812B_ShowAndWait(uint8_t r, uint8_t g, uint8_t b,
+                                   uint32_t hold_time_ms) {
+    if (!WS2812B_WaitReady(20U)) {
+        return 0U;
+    }
+
+    WS2812B_SetColor(0, r, g, b);
+    WS2812B_Update();
+
+    if (!WS2812B_WaitReady(20U)) {
+        return 0U;
+    }
+
+    HAL_Delay(hold_time_ms);
+    return 1U;
+}
+
 void WS2812B_Init(TIM_HandleTypeDef *htim, uint32_t channel) {
     ws2812b_htim = htim;
     ws2812b_channel = channel;
@@ -51,6 +80,25 @@ void WS2812B_Update(void) {
 
 uint8_t WS2812B_IsReady(void) {
     return ws2812b_transfer_complete;
+}
+
+void WS2812B_PowerOnSelfTest(uint8_t brightness, uint32_t on_time_ms) {
+    if (!WS2812B_ShowAndWait(brightness, 0, 0, on_time_ms)) {
+        return;
+    }
+    if (!WS2812B_ShowAndWait(0, 0, 0, 80U)) {
+        return;
+    }
+    if (!WS2812B_ShowAndWait(0, brightness, 0, on_time_ms)) {
+        return;
+    }
+    if (!WS2812B_ShowAndWait(0, 0, 0, 80U)) {
+        return;
+    }
+    if (!WS2812B_ShowAndWait(0, 0, brightness, on_time_ms)) {
+        return;
+    }
+    (void)WS2812B_ShowAndWait(0, 0, 0, 0U);
 }
 
 void WS2812B_TransferCompleteCallback(TIM_HandleTypeDef *htim) {

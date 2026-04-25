@@ -45,6 +45,10 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    Drivers/DRV8323RS/drv8323rs.c
+    Drivers/Motor/motor_pwm.c
+    Drivers/Motor/svpwm.c
+    Drivers/Motor/motor_open_loop.c
     Drivers/WS2812B/ws2812b.c
         Drivers/SEGGER-RTT/SEGGER_RTT.c
         Drivers/SEGGER-RTT/SEGGER_RTT_printf.c
@@ -55,6 +59,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    Drivers/DRV8323RS
+    Drivers/Motor
     Drivers/WS2812B
         Drivers/SEGGER-RTT
         Drivers/AS5047P
@@ -71,6 +77,7 @@ list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 # Add linked libraries
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
+    m
 
     # Add user defined libraries
 )

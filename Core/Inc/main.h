@@ -61,8 +61,10 @@ void Error_Handler(void);
 #define SPI1_CS_GPIO_Port GPIOC
 #define SPI3_CS_Pin GPIO_PIN_0
 #define SPI3_CS_GPIO_Port GPIOA
-#define ENABLE_Pin GPIO_PIN_9
-#define ENABLE_GPIO_Port GPIOC
+#define CAL_Pin GPIO_PIN_9
+#define CAL_GPIO_Port GPIOC
+#define ENABLE_Pin GPIO_PIN_8
+#define ENABLE_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 
