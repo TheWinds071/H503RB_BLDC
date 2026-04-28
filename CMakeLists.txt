@@ -46,9 +46,12 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Drivers/DRV8323RS/drv8323rs.c
+    Drivers/DRV8323RS/drv8323rs_current.c
     Drivers/Motor/motor_pwm.c
     Drivers/Motor/svpwm.c
     Drivers/Motor/motor_open_loop.c
+    Drivers/Motor/motor_encoder_align.c
+    Drivers/Motor/motor_encoder_drive.c
     Drivers/WS2812B/ws2812b.c
         Drivers/SEGGER-RTT/SEGGER_RTT.c
         Drivers/SEGGER-RTT/SEGGER_RTT_printf.c

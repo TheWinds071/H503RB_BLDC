@@ -34,6 +34,9 @@
 #include "as5047p.h"
 #include "as5047p_port.h"
 #include "drv8323rs.h"
+#include "drv8323rs_current.h"
+#include "motor_encoder_align.h"
+#include "motor_encoder_drive.h"
 #include "motor_open_loop.h"
 /* USER CODE END Includes */
 
@@ -44,6 +47,19 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define MOTOR_POLE_PAIRS 14U
+#define MOTOR_BUS_VOLTAGE 12.0f
+#define MOTOR_ALIGN_VOLTAGE 1.5f
+#define MOTOR_MODULATION_LIMIT 0.80f
+#define MOTOR_ENCODER_ALIGN_TIME_MS 1000U
+#define MOTOR_ENCODER_ALIGN_SAMPLE_COUNT 32U
+#define MOTOR_RUN_VOLTAGE_Q 2.0f
+#define MOTOR_ELECTRICAL_SPEED_HZ 0.5f
+#define MOTOR_ENCODER_DIRECTION 1
+#define DRV8323RS_CURRENT_VREF_MV 3300U
+#define DRV8323RS_CURRENT_SHUNT_OHM 0.010f
+#define DRV8323RS_CURRENT_CSA_GAIN_VV 10.0f
+#define DRV8323RS_CURRENT_CALIBRATION_SAMPLES 256U
 
 /* USER CODE END PD */
 
@@ -57,10 +73,16 @@
 /* USER CODE BEGIN PV */
 as5047p_handle_t as5047p;
 uint16_t current_angle = 0;
-volatile uint16_t current_angle_deg = 0;
+uint32_t current_angle_mdeg = 0;
+uint32_t encoder_electrical_mdeg = 0;
+drv8323rs_current_amps_t phase_current_amps = {0.0f, 0.0f, 0.0f};
 drv8323rs_t drv8323rs;
+drv8323rs_current_t drv8323rs_current;
+volatile uint16_t drv8323rs_current_dma_buffer[3] = {2048U, 2048U, 2048U};
 motor_pwm_t motor_pwm;
 motor_open_loop_t motor_open_loop;
+motor_encoder_align_t motor_encoder_align;
+motor_encoder_drive_t motor_encoder_drive;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -72,6 +94,27 @@ static void MPU_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static uint32_t AS5047P_RawToMilliDegrees(uint16_t raw)
+{
+  return motor_encoder_align_raw_to_mdeg(raw);
+}
+
+static int32_t AmpsToMilliamps(float amps)
+{
+  return (int32_t)((amps >= 0.0f) ? ((amps * 1000.0f) + 0.5f)
+                                  : ((amps * 1000.0f) - 0.5f));
+}
+
+static void PrintMilliamps(int32_t milliamps)
+{
+  if (milliamps < 0) {
+    RTT_Log("-%ld.%03ld", (long)((-milliamps) / 1000),
+            (long)((-milliamps) % 1000));
+  } else {
+    RTT_Log("%ld.%03ld", (long)(milliamps / 1000),
+            (long)(milliamps % 1000));
+  }
+}
 
 /* USER CODE END 0 */
 
@@ -128,6 +171,8 @@ int main(void)
                          .cs_pin = SPI3_CS_Pin,
                          .enable_port = ENABLE_GPIO_Port,
                          .enable_pin = ENABLE_Pin,
+                         .csa_gain = DRV8323RS_CSA_GAIN_10VV,
+                         .sense_ocp_enable = 0U,
                      }) != HAL_OK) {
     uint16_t drv_regs[7] = {0};
     RTT_Log("[DRV8323RS] pins: CS=%u MISO=%u ENABLE=%u CAL=%u\n",
@@ -166,7 +211,7 @@ int main(void)
                          .htim = &htim1,
                          .enable_port = ENABLE_GPIO_Port,
                          .enable_pin = ENABLE_Pin,
-                         .bus_voltage = 12.0f,
+                         .bus_voltage = MOTOR_BUS_VOLTAGE,
                      }) != HAL_OK) {
     Error_Handler();
   }
@@ -174,23 +219,92 @@ int main(void)
   if (motor_open_loop_init(&motor_open_loop,
                            &(motor_open_loop_config_t){
                                .motor_pwm = &motor_pwm,
-                               .bus_voltage = 12.0f,
-                               .align_voltage = 3.0f,
+                               .bus_voltage = MOTOR_BUS_VOLTAGE,
+                               .align_voltage = MOTOR_ALIGN_VOLTAGE,
                                .align_time_ms = 800U,
                                .voltage_q = 4.0f,
                                .startup_speed_hz = 0.3f,
                                .ramp_time_ms = 1500U,
                                .electrical_speed_hz = 1.0f,
-                               .modulation_limit = 0.80f,
+                               .modulation_limit = MOTOR_MODULATION_LIMIT,
                            }) != HAL_OK) {
     Error_Handler();
   }
 
-  if (motor_open_loop_start(&motor_open_loop) != HAL_OK) {
+  if (drv8323rs_current_init(
+          &drv8323rs_current,
+          &(drv8323rs_current_config_t){
+              .hadc = &hadc1,
+              .vref_mv = DRV8323RS_CURRENT_VREF_MV,
+              .shunt_ohm = DRV8323RS_CURRENT_SHUNT_OHM,
+              .csa_gain_vv = DRV8323RS_CURRENT_CSA_GAIN_VV,
+              .calibration_samples = DRV8323RS_CURRENT_CALIBRATION_SAMPLES,
+              .dma_buffer = drv8323rs_current_dma_buffer,
+              .dma_buffer_length = 3U,
+          }) != HAL_OK) {
     Error_Handler();
   }
 
-  RTT_Log("[SYSTEM] DRV8323RS ready, open-loop SVPWM started.\n");
+  if (drv8323rs_current_start_dma(&drv8323rs_current) != HAL_OK) {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4) != HAL_OK) {
+    Error_Handler();
+  }
+
+  HAL_Delay(5U);
+
+  if (drv8323rs_current_calibrate_offsets(&drv8323rs_current) != HAL_OK) {
+    Error_Handler();
+  }
+
+  if (motor_encoder_align_init(
+          &motor_encoder_align,
+          &(motor_encoder_align_config_t){
+              .encoder = &as5047p,
+              .motor_pwm = &motor_pwm,
+              .pole_pairs = MOTOR_POLE_PAIRS,
+              .bus_voltage = MOTOR_BUS_VOLTAGE,
+              .align_voltage = MOTOR_ALIGN_VOLTAGE,
+              .modulation_limit = MOTOR_MODULATION_LIMIT,
+              .align_time_ms = MOTOR_ENCODER_ALIGN_TIME_MS,
+              .sample_count = MOTOR_ENCODER_ALIGN_SAMPLE_COUNT,
+          }) != HAL_OK) {
+    Error_Handler();
+  }
+
+  if (motor_encoder_drive_init(
+          &motor_encoder_drive,
+          &(motor_encoder_drive_config_t){
+              .align = &motor_encoder_align,
+              .voltage_q = MOTOR_RUN_VOLTAGE_Q,
+              .electrical_speed_hz = MOTOR_ELECTRICAL_SPEED_HZ,
+              .bus_voltage = MOTOR_BUS_VOLTAGE,
+              .modulation_limit = MOTOR_MODULATION_LIMIT,
+              .sensor_direction = MOTOR_ENCODER_DIRECTION,
+          }) != HAL_OK) {
+    Error_Handler();
+  }
+
+  {
+    uint16_t aligned_mech_raw = 0;
+
+    if (motor_encoder_align_run(&motor_encoder_align, &aligned_mech_raw) !=
+        HAL_OK) {
+      RTT_Log("[ALIGN] failed, PWM stopped.\n");
+      Error_Handler();
+    }
+  }
+
+  if (motor_encoder_drive_start(&motor_encoder_drive) != HAL_OK) {
+    Error_Handler();
+  }
+
+  HAL_GPIO_WritePin(ENABLE_GPIO_Port, ENABLE_Pin, GPIO_PIN_SET);
+  RTT_Log("[ANGLE] offset=%u\n",
+          (unsigned int)motor_encoder_align_get_offset_raw(
+              &motor_encoder_align));
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -200,19 +314,49 @@ int main(void)
     static uint32_t last_log_ms = 0;
     int8_t status;
 
-    motor_open_loop_update(&motor_open_loop);
+    (void)motor_encoder_drive_update(&motor_encoder_drive);
 
-    status = as5047p_get_position(&as5047p, without_daec, &current_angle);
+    status = as5047p_get_position(&as5047p, with_daec, &current_angle);
     if (status == 0) {
-      current_angle_deg = (uint16_t)(((uint32_t)current_angle * 360U) / 16384U);
+      current_angle_mdeg = AS5047P_RawToMilliDegrees(current_angle);
+      encoder_electrical_mdeg =
+          AS5047P_RawToMilliDegrees(motor_encoder_align_get_elec_raw(
+              &motor_encoder_align, current_angle));
     }
 
-    if ((HAL_GetTick() - last_log_ms) >= 100U) {
+    if ((HAL_GetTick() - last_log_ms) >= 250U) {
+      int32_t ia_ma = 0;
+      int32_t ib_ma = 0;
+      int32_t ic_ma = 0;
+
       last_log_ms = HAL_GetTick();
-      RTT_Log("cmd_ele=%.1f deg, enc_mech=%u deg, raw=%u\n",
-              motor_open_loop_get_electrical_angle_deg(&motor_open_loop),
-              (unsigned int)current_angle_deg,
-              (unsigned int)current_angle);
+      if (drv8323rs_current_read_amps(&drv8323rs_current,
+                                      &phase_current_amps) == HAL_OK) {
+        ia_ma = AmpsToMilliamps(phase_current_amps.a);
+        ib_ma = AmpsToMilliamps(phase_current_amps.b);
+        ic_ma = AmpsToMilliamps(phase_current_amps.c);
+      }
+
+      RTT_Log("[ANGLE2] cmd=%u.%03u ele=%u.%03u mech=%u.%03u raw=%u off=%u Iabc=",
+              (unsigned int)(motor_encoder_drive_get_electrical_mdeg(
+                                 &motor_encoder_drive) /
+                             1000U),
+              (unsigned int)(motor_encoder_drive_get_electrical_mdeg(
+                                 &motor_encoder_drive) %
+                             1000U),
+              (unsigned int)(encoder_electrical_mdeg / 1000U),
+              (unsigned int)(encoder_electrical_mdeg % 1000U),
+              (unsigned int)(current_angle_mdeg / 1000U),
+              (unsigned int)(current_angle_mdeg % 1000U),
+              (unsigned int)current_angle,
+              (unsigned int)motor_encoder_align_get_offset_raw(
+                  &motor_encoder_align));
+      PrintMilliamps(ia_ma);
+      RTT_Log(",");
+      PrintMilliamps(ib_ma);
+      RTT_Log(",");
+      PrintMilliamps(ic_ma);
+      RTT_Log("A\n");
     }
 
     HAL_Delay(1);
