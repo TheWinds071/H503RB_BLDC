@@ -53,6 +53,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/Motor/motor_encoder_align.c
     Drivers/Motor/motor_encoder_drive.c
     Drivers/Motor/motor_foc.c
+    Drivers/Motor/motor_can.c
     Drivers/WS2812B/ws2812b.c
         Drivers/SEGGER-RTT/SEGGER_RTT.c
         Drivers/SEGGER-RTT/SEGGER_RTT_printf.c

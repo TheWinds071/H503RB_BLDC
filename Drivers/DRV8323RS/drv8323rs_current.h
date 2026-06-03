@@ -49,6 +49,9 @@ HAL_StatusTypeDef drv8323rs_current_start_dma(drv8323rs_current_t *sense);
 HAL_StatusTypeDef drv8323rs_current_read_raw(
     drv8323rs_current_t *sense,
     drv8323rs_current_raw_t *raw);
+HAL_StatusTypeDef drv8323rs_current_get_offsets(
+    drv8323rs_current_t *sense,
+    drv8323rs_current_raw_t *offsets);
 HAL_StatusTypeDef drv8323rs_current_read_amps(
     drv8323rs_current_t *sense,
     drv8323rs_current_amps_t *amps);

@@ -35,6 +35,8 @@
 #include "as5047p_port.h"
 #include "drv8323rs.h"
 #include "drv8323rs_current.h"
+#include "motor_can.h"
+#include "motor_foc.h"
 #include "motor_encoder_align.h"
 #include "motor_encoder_drive.h"
 #include "motor_open_loop.h"
@@ -53,9 +55,20 @@
 #define MOTOR_MODULATION_LIMIT 0.80f
 #define MOTOR_ENCODER_ALIGN_TIME_MS 1000U
 #define MOTOR_ENCODER_ALIGN_SAMPLE_COUNT 32U
+#define MOTOR_ENCODER_ALIGN_ON_STARTUP 0U
+#define MOTOR_ENCODER_FIXED_OFFSET_RAW 7052U
+#define MOTOR_OPEN_LOOP_RUN_VOLTAGE_Q 4.0f
 #define MOTOR_RUN_VOLTAGE_Q 2.0f
 #define MOTOR_ELECTRICAL_SPEED_HZ 5.0f
 #define MOTOR_ENCODER_DIRECTION 1
+#define MOTOR_POSITION_STEP_MODE 0U
+#define MOTOR_POSITION_START_DEG 0
+#define MOTOR_POSITION_STEP_DEG 10
+#define MOTOR_POSITION_REV_MDEG 360000
+#define MOTOR_POSITION_STEP_SETTLE_MDEG 500
+#define MOTOR_POSITION_STEP_RESET_MDEG 2000
+#define MOTOR_POSITION_STEP_HOLD_MS 300U
+#define MOTOR_CONTROL_ADC_TICK_S 0.00005f
 #define DRV8323RS_CURRENT_VREF_MV 3300U
 #define DRV8323RS_CURRENT_SHUNT_OHM 0.010f
 #define DRV8323RS_CURRENT_CSA_GAIN_VV 10.0f
@@ -72,8 +85,6 @@
 
 /* USER CODE BEGIN PV */
 as5047p_handle_t as5047p;
-uint16_t current_angle = 0;
-uint32_t current_angle_mdeg = 0;
 uint32_t encoder_electrical_mdeg = 0;
 drv8323rs_current_amps_t phase_current_amps = {0.0f, 0.0f, 0.0f};
 drv8323rs_t drv8323rs;
@@ -83,6 +94,10 @@ motor_pwm_t motor_pwm;
 motor_open_loop_t motor_open_loop;
 motor_encoder_align_t motor_encoder_align;
 motor_encoder_drive_t motor_encoder_drive;
+volatile uint8_t motor_control_adc_sync_enabled = 0U;
+volatile uint8_t motor_control_adc_tick_pending = 0U;
+volatile uint32_t motor_control_adc_tick_count = 0U;
+volatile uint32_t motor_control_adc_tick_overrun = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -94,26 +109,23 @@ static void MPU_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static uint32_t AS5047P_RawToMilliDegrees(uint16_t raw)
-{
-  return motor_encoder_align_raw_to_mdeg(raw);
-}
-
 static int32_t AmpsToMilliamps(float amps)
 {
   return (int32_t)((amps >= 0.0f) ? ((amps * 1000.0f) + 0.5f)
                                   : ((amps * 1000.0f) - 0.5f));
 }
 
-static void PrintMilliamps(int32_t milliamps)
+static int32_t RoundToNearestRevolutionMdeg(int32_t mdeg)
 {
-  if (milliamps < 0) {
-    RTT_Log("-%ld.%03ld", (long)((-milliamps) / 1000),
-            (long)((-milliamps) % 1000));
-  } else {
-    RTT_Log("%ld.%03ld", (long)(milliamps / 1000),
-            (long)(milliamps % 1000));
+  if (mdeg >= 0) {
+    return ((mdeg + (MOTOR_POSITION_REV_MDEG / 2)) /
+            MOTOR_POSITION_REV_MDEG) *
+           MOTOR_POSITION_REV_MDEG;
   }
+
+  return ((mdeg - (MOTOR_POSITION_REV_MDEG / 2)) /
+          MOTOR_POSITION_REV_MDEG) *
+         MOTOR_POSITION_REV_MDEG;
 }
 
 /* USER CODE END 0 */
@@ -222,7 +234,7 @@ int main(void)
                                .bus_voltage = MOTOR_BUS_VOLTAGE,
                                .align_voltage = MOTOR_ALIGN_VOLTAGE,
                                .align_time_ms = 800U,
-                               .voltage_q = 4.0f,
+                               .voltage_q = MOTOR_OPEN_LOOP_RUN_VOLTAGE_Q,
                                .startup_speed_hz = 0.3f,
                                .ramp_time_ms = 1500U,
                                .electrical_speed_hz = 1.0f,
@@ -258,6 +270,17 @@ int main(void)
   if (drv8323rs_current_calibrate_offsets(&drv8323rs_current) != HAL_OK) {
     Error_Handler();
   }
+  {
+    drv8323rs_current_raw_t offset_raw = {0U, 0U, 0U};
+
+    if (drv8323rs_current_get_offsets(&drv8323rs_current, &offset_raw) ==
+        HAL_OK) {
+      RTT_Log("[CURRENT] offset raw=%u,%u,%u\n",
+              (unsigned int)offset_raw.a,
+              (unsigned int)offset_raw.b,
+              (unsigned int)offset_raw.c);
+    }
+  }
 
   if (motor_encoder_align_init(
           &motor_encoder_align,
@@ -287,7 +310,7 @@ int main(void)
     Error_Handler();
   }
 
-  {
+  if (MOTOR_ENCODER_ALIGN_ON_STARTUP != 0U) {
     uint16_t aligned_mech_raw = 0;
 
     if (motor_encoder_align_run(&motor_encoder_align, &aligned_mech_raw) !=
@@ -295,13 +318,52 @@ int main(void)
       RTT_Log("[ALIGN] failed, PWM stopped.\n");
       Error_Handler();
     }
+    RTT_Log("[ALIGN] mech_raw=%u offset=%u\n",
+            (unsigned int)aligned_mech_raw,
+            (unsigned int)motor_encoder_align_get_offset_raw(
+                &motor_encoder_align));
+  } else {
+    if (motor_encoder_align_set_offset_raw(&motor_encoder_align,
+                                           MOTOR_ENCODER_FIXED_OFFSET_RAW) !=
+        HAL_OK) {
+      Error_Handler();
+    }
+    RTT_Log("[ALIGN] skipped fixed_offset=%u\n",
+            (unsigned int)motor_encoder_align_get_offset_raw(
+                &motor_encoder_align));
   }
 
-  if (motor_encoder_drive_start(&motor_encoder_drive) != HAL_OK) {
+  if (MOTOR_POSITION_STEP_MODE != 0U) {
+    if (motor_encoder_drive_start(&motor_encoder_drive) != HAL_OK) {
+      Error_Handler();
+    }
+    motor_encoder_drive_set_mode(&motor_encoder_drive,
+                                 MOTOR_ENCODER_DRIVE_MODE_POSITION);
+    if (motor_encoder_drive_set_position_target_mdeg(&motor_encoder_drive,
+                                                     MOTOR_POSITION_START_DEG *
+                                                         1000) !=
+        HAL_OK) {
+      Error_Handler();
+    }
+    RTT_Log("[POS] absolute step mode start=%ddeg step=%ddeg settle=%dmdeg\n",
+            MOTOR_POSITION_START_DEG,
+            MOTOR_POSITION_STEP_DEG,
+            MOTOR_POSITION_STEP_SETTLE_MDEG);
+  }
+  if (motor_can_init(&hfdcan1) != HAL_OK) {
+    RTT_Log("[CAN] init failed\n");
     Error_Handler();
   }
+  RTT_Log("[CAN] FD ready cmd=0x%03X status=0x%03X\n",
+          MOTOR_CAN_CMD_ID,
+          MOTOR_CAN_STATUS_ID);
 
-  HAL_GPIO_WritePin(ENABLE_GPIO_Port, ENABLE_Pin, GPIO_PIN_SET);
+  motor_control_adc_tick_pending = 0U;
+  motor_control_adc_tick_overrun = 0U;
+  motor_control_adc_sync_enabled = 1U;
+
+  HAL_GPIO_WritePin(ENABLE_GPIO_Port, ENABLE_Pin, GPIO_PIN_RESET);
+  RTT_Log("[MOTOR] waiting for CAN command, PWM disabled\n");
   RTT_Log("[ANGLE] offset=%u\n",
           (unsigned int)motor_encoder_align_get_offset_raw(
               &motor_encoder_align));
@@ -312,54 +374,139 @@ int main(void)
   while (1)
   {
     static uint32_t last_log_ms = 0;
-    int8_t status;
+    static uint32_t last_control_adc_tick_count = 0U;
+    static uint32_t position_step_settle_ms = 0U;
+    static int32_t position_target_mdeg = MOTOR_POSITION_START_DEG * 1000;
+    static uint8_t position_step_initialized = 0U;
+    motor_foc_abc_t phase_current_foc = {0.0f, 0.0f, 0.0f};
+    uint8_t phase_current_valid = 0U;
+    uint32_t adc_tick_count = 0U;
+    uint32_t adc_tick_overrun = 0U;
+    uint32_t adc_tick_delta = 1U;
+    float control_dt_s;
 
-    (void)motor_encoder_drive_update(&motor_encoder_drive);
-
-    status = as5047p_get_position(&as5047p, with_daec, &current_angle);
-    if (status == 0) {
-      current_angle_mdeg = AS5047P_RawToMilliDegrees(current_angle);
-      encoder_electrical_mdeg =
-          AS5047P_RawToMilliDegrees(motor_encoder_align_get_elec_raw(
-              &motor_encoder_align, current_angle));
+    if (motor_control_adc_tick_pending == 0U) {
+      continue;
     }
 
-    if ((HAL_GetTick() - last_log_ms) >= 250U) {
+    __disable_irq();
+    motor_control_adc_tick_pending = 0U;
+    adc_tick_count = motor_control_adc_tick_count;
+    adc_tick_overrun = motor_control_adc_tick_overrun;
+    __enable_irq();
+
+    if (last_control_adc_tick_count != 0U) {
+      adc_tick_delta = adc_tick_count - last_control_adc_tick_count;
+      if (adc_tick_delta == 0U) {
+        adc_tick_delta = 1U;
+      }
+    }
+    last_control_adc_tick_count = adc_tick_count;
+    control_dt_s = (float)adc_tick_delta * MOTOR_CONTROL_ADC_TICK_S;
+
+    if (drv8323rs_current_read_amps(&drv8323rs_current,
+                                    &phase_current_amps) == HAL_OK) {
+      phase_current_foc.a = phase_current_amps.a;
+      phase_current_foc.b = phase_current_amps.b;
+      phase_current_foc.c = phase_current_amps.c;
+      phase_current_valid = 1U;
+    }
+
+    motor_can_process(&motor_encoder_drive);
+    if (motor_encoder_drive.started != 0U) {
+      (void)motor_encoder_drive_update_with_current_dt(
+          &motor_encoder_drive,
+          (phase_current_valid != 0U) ? &phase_current_foc : NULL,
+          control_dt_s);
+    }
+
+    if ((MOTOR_POSITION_STEP_MODE != 0U) && (motor_can_is_active() == 0U)) {
+      int32_t position_mdeg =
+          motor_encoder_drive_get_position_mdeg(&motor_encoder_drive);
+      int32_t position_error_mdeg;
+      uint32_t now_ms = HAL_GetTick();
+
+      if (position_step_initialized == 0U) {
+        position_target_mdeg = RoundToNearestRevolutionMdeg(position_mdeg);
+        (void)motor_encoder_drive_set_position_target_mdeg(
+            &motor_encoder_drive, position_target_mdeg);
+        position_step_initialized = 1U;
+        RTT_Log("[POS] align absolute zero target=%ldmdeg current=%ldmdeg\n",
+                (long)position_target_mdeg,
+                (long)position_mdeg);
+      }
+
+      position_error_mdeg = position_target_mdeg - position_mdeg;
+      if (position_error_mdeg < 0) {
+        position_error_mdeg = -position_error_mdeg;
+      }
+
+      if (position_error_mdeg <= MOTOR_POSITION_STEP_SETTLE_MDEG) {
+        if (position_step_settle_ms == 0U) {
+          position_step_settle_ms = now_ms;
+        } else if ((now_ms - position_step_settle_ms) >=
+                   MOTOR_POSITION_STEP_HOLD_MS) {
+          position_target_mdeg += MOTOR_POSITION_STEP_DEG * 1000;
+          position_step_settle_ms = 0U;
+          (void)motor_encoder_drive_set_position_target_mdeg(
+              &motor_encoder_drive, position_target_mdeg);
+          RTT_Log("[POS] step target=%ldmdeg current=%ldmdeg err=%ldmdeg\n",
+                  (long)position_target_mdeg,
+                  (long)position_mdeg,
+                  (long)position_error_mdeg);
+        }
+      } else if (position_error_mdeg > MOTOR_POSITION_STEP_RESET_MDEG) {
+        position_step_settle_ms = 0U;
+      }
+    }
+
+    if ((HAL_GetTick() - last_log_ms) >= 2000U) {
       int32_t ia_ma = 0;
       int32_t ib_ma = 0;
       int32_t ic_ma = 0;
+      drv8323rs_current_raw_t current_raw = {0U, 0U, 0U};
+      motor_foc_dq_t current_dq =
+          motor_encoder_drive_get_current_dq(&motor_encoder_drive);
+      int32_t id_ma = AmpsToMilliamps(current_dq.d);
+      int32_t iq_ma = AmpsToMilliamps(current_dq.q);
+      int32_t iq_ref_ma = AmpsToMilliamps(
+          motor_encoder_drive_get_current_q_ref(&motor_encoder_drive));
+      int32_t position_mdeg =
+          motor_encoder_drive_get_position_mdeg(&motor_encoder_drive);
+      int32_t position_target_log_mdeg =
+          motor_encoder_drive_get_position_target_mdeg(&motor_encoder_drive);
+      encoder_electrical_mdeg =
+          motor_encoder_drive_get_electrical_mdeg(&motor_encoder_drive);
 
       last_log_ms = HAL_GetTick();
-      if (drv8323rs_current_read_amps(&drv8323rs_current,
-                                      &phase_current_amps) == HAL_OK) {
+      if (phase_current_valid != 0U) {
         ia_ma = AmpsToMilliamps(phase_current_amps.a);
         ib_ma = AmpsToMilliamps(phase_current_amps.b);
         ic_ma = AmpsToMilliamps(phase_current_amps.c);
       }
+      (void)drv8323rs_current_read_raw(&drv8323rs_current, &current_raw);
 
-      RTT_Log("[ANGLE2] cmd=%u.%03u ele=%u.%03u mech=%u.%03u raw=%u off=%u Iabc=",
-              (unsigned int)(motor_encoder_drive_get_electrical_mdeg(
-                                 &motor_encoder_drive) /
-                             1000U),
-              (unsigned int)(motor_encoder_drive_get_electrical_mdeg(
-                                 &motor_encoder_drive) %
-                             1000U),
+      RTT_Log("[FOC] t=%lu ov=%lu pos=%ld/%ld ele=%u.%03u spd=%.2f vq=%.2f "
+              "adc=%u,%u,%u iq=%ld/%ld id=%ld ia=%ld,%ld,%ld\n",
+              (unsigned long)adc_tick_count,
+              (unsigned long)adc_tick_overrun,
+              (long)position_mdeg,
+              (long)position_target_log_mdeg,
               (unsigned int)(encoder_electrical_mdeg / 1000U),
               (unsigned int)(encoder_electrical_mdeg % 1000U),
-              (unsigned int)(current_angle_mdeg / 1000U),
-              (unsigned int)(current_angle_mdeg % 1000U),
-              (unsigned int)current_angle,
-              (unsigned int)motor_encoder_align_get_offset_raw(
-                  &motor_encoder_align));
-      PrintMilliamps(ia_ma);
-      RTT_Log(",");
-      PrintMilliamps(ib_ma);
-      RTT_Log(",");
-      PrintMilliamps(ic_ma);
-      RTT_Log("A\n");
+              (double)motor_encoder_drive_get_measured_speed_hz(
+                  &motor_encoder_drive),
+              (double)motor_encoder_drive_get_voltage_q(&motor_encoder_drive),
+              (unsigned int)current_raw.a,
+              (unsigned int)current_raw.b,
+              (unsigned int)current_raw.c,
+              (long)iq_ref_ma,
+              (long)iq_ma,
+              (long)id_ma,
+              (long)ia_ma,
+              (long)ib_ma,
+              (long)ic_ma);
     }
-
-    HAL_Delay(1);
 
     /* USER CODE END WHILE */
 
@@ -425,6 +572,17 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
+  if ((hadc != NULL) && (hadc->Instance == ADC1) &&
+      (motor_control_adc_sync_enabled != 0U)) {
+    if (motor_control_adc_tick_pending != 0U) {
+      motor_control_adc_tick_overrun++;
+    }
+    motor_control_adc_tick_pending = 1U;
+    motor_control_adc_tick_count++;
+  }
+}
+
 void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim) {
   WS2812B_TransferCompleteCallback(htim);
 }

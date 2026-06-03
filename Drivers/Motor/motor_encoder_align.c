@@ -160,3 +160,14 @@ HAL_StatusTypeDef motor_encoder_align_run(motor_encoder_align_t *align,
 
     return HAL_OK;
 }
+
+HAL_StatusTypeDef motor_encoder_align_set_offset_raw(
+    motor_encoder_align_t *align,
+    uint16_t electrical_offset_raw) {
+    if (align == NULL) {
+        return HAL_ERROR;
+    }
+
+    align->electrical_offset_raw = (uint16_t)(electrical_offset_raw & 0x3FFFU);
+    return HAL_OK;
+}

@@ -58,6 +58,7 @@
 extern DMA_NodeTypeDef Node_GPDMA1_Channel5;
 extern DMA_QListTypeDef List_GPDMA1_Channel5;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel5;
+extern FDCAN_HandleTypeDef hfdcan1;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel4;
 /* USER CODE BEGIN EV */
 
@@ -227,6 +228,20 @@ void GPDMA1_Channel5_IRQHandler(void)
   /* USER CODE BEGIN GPDMA1_Channel5_IRQn 1 */
 
   /* USER CODE END GPDMA1_Channel5_IRQn 1 */
+}
+
+/**
+  * @brief This function handles FDCAN1 interrupt 0.
+  */
+void FDCAN1_IT0_IRQHandler(void)
+{
+  /* USER CODE BEGIN FDCAN1_IT0_IRQn 0 */
+
+  /* USER CODE END FDCAN1_IT0_IRQn 0 */
+  HAL_FDCAN_IRQHandler(&hfdcan1);
+  /* USER CODE BEGIN FDCAN1_IT0_IRQn 1 */
+
+  /* USER CODE END FDCAN1_IT0_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */

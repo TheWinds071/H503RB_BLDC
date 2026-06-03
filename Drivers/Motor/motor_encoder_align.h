@@ -37,6 +37,9 @@ HAL_StatusTypeDef motor_encoder_align_init(
     const motor_encoder_align_config_t *config);
 HAL_StatusTypeDef motor_encoder_align_run(motor_encoder_align_t *align,
                                           uint16_t *aligned_mech_raw);
+HAL_StatusTypeDef motor_encoder_align_set_offset_raw(
+    motor_encoder_align_t *align,
+    uint16_t electrical_offset_raw);
 uint16_t motor_encoder_align_mech_to_elec_raw(
     const motor_encoder_align_t *align,
     uint16_t mech_raw);

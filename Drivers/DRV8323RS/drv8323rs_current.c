@@ -54,6 +54,17 @@ HAL_StatusTypeDef drv8323rs_current_read_raw(
     return HAL_OK;
 }
 
+HAL_StatusTypeDef drv8323rs_current_get_offsets(
+    drv8323rs_current_t *sense,
+    drv8323rs_current_raw_t *offsets) {
+    if ((sense == NULL) || (offsets == NULL)) {
+        return HAL_ERROR;
+    }
+
+    *offsets = sense->offset_raw;
+    return HAL_OK;
+}
+
 HAL_StatusTypeDef drv8323rs_current_calibrate_offsets(
     drv8323rs_current_t *sense) {
     uint32_t sum_a = 0U;
